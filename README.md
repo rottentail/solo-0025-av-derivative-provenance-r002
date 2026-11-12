@@ -5,15 +5,35 @@ derivation. It accepts PCM WAV and planar Y4M media, applies bounded
 operations, records content digests and lineage, and reproduces a completed
 result on demand to verify that the stored bytes still match the plan.
 
-The application uses only the Python standard runtime. It does not need
-FFmpeg, network access, credentials, or an online database.
+The application runs on the Python standard runtime plus one pinned third-party
+dependency, NumPy, which powers the PCM and planar-YUV compute kernels. It does
+not need FFmpeg, network access at runtime, credentials, or an online database.
+
+## Install (reproducible)
+
+Runtime dependencies are pinned with SHA-256 hashes in `requirements.txt`, so
+installs verify the exact wheels they download. Create a virtual environment
+and install from the hash-pinned file:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements.txt
+```
+
+On minimal interpreters that ship without `ensurepip` (for example a Debian
+system Python), bootstrap pip into the virtual environment once with
+`python -I get-pip.py` (downloaded from <https://bootstrap.pypa.io/get-pip/>)
+and then run the same `pip install --require-hashes` command. The hash-to-file
+mapping is recorded in `tools/numpy-hashes.txt`.
 
 ## What it does
 
 - Ingests one- or two-channel signed 16-bit PCM WAV.
 - Ingests planar 4:2:0 YUV4MPEG2 in the `C420` family.
-- Applies audio trim, gain, normalization, and two-source mixing.
-- Applies video trim, even-aligned crop, luma offset, and horizontal mirror.
+- Applies audio trim, gain, normalization, and two-source mixing as vectorized
+  NumPy kernels.
+- Applies video trim, even-aligned crop, luma offset, and horizontal mirror as
+  vectorized NumPy kernels.
 - Persists immutable assets, rendition state, provenance edges, and integrity
   checks.
 - Replays the stored operation plan and compares both bytes and media
@@ -22,8 +42,8 @@ FFmpeg, network access, credentials, or an online database.
 ## Quick start
 
 ```bash
-python3 -m compileall -q avprovenance scripts
-python3 -m avprovenance --host 127.0.0.1 --port 8765 --data-dir .avprovenance-data
+.venv/bin/python -m compileall -q avprovenance scripts
+.venv/bin/python -m avprovenance --host 127.0.0.1 --port 8765 --data-dir .avprovenance-data
 ```
 
 The startup line includes the active host, port, and data directory. Stop the
@@ -190,16 +210,34 @@ depend on HTTP or the repository.
 
 The baseline intentionally has no automated test suite. Tests are deferred to
 the later task stage, which will add red/green verification coverage. The
-current production workflow checks are:
+current production workflow checks (run inside the virtual environment) are:
 
 ```bash
-python3 scripts/workflow_checks.py ingest-media-asset
-python3 scripts/workflow_checks.py execute-rendition
-python3 scripts/workflow_checks.py verify-reproduction
+.venv/bin/python scripts/workflow_checks.py ingest-media-asset
+.venv/bin/python scripts/workflow_checks.py execute-rendition
+.venv/bin/python scripts/workflow_checks.py verify-reproduction
 ```
 
 Each check starts a temporary HTTP server, generates media bytes in memory,
 exercises the public endpoints, and shuts the server down.
+
+### NumPy migration parity checks
+
+The `tools/` directory holds the frozen pre-NumPy reference implementation and
+checks that prove the NumPy kernels reproduce its exact bytes rather than just
+matching durations or descriptor fields:
+
+```bash
+python3 -I tools/generate_golden.py            # stdlib-only golden generation
+.venv/bin/python -I tools/check_parity.py             # byte/descriptor/error parity
+.venv/bin/python -I tools/check_fuzz.py 400           # randomized differential runs
+.venv/bin/python -I tools/check_semantics.py          # stereo and luma edge semantics
+.venv/bin/python -I tools/check_cross_implementation.py
+```
+
+The cross-implementation check renders durable renditions with the frozen
+implementation and confirms the migrated application reproduces them as
+`verified` through the integrity-check entry point. See `tools/README.md`.
 
 ## Environment
 
@@ -207,3 +245,6 @@ No environment variables are required. Runtime choices use `--host`, `--port`,
 and `--data-dir`. Incoming request bodies are limited to 36 MiB, decoded media
 payloads to 24 MiB, WAV geometry to one or two channels, and Y4M geometry to
 1920x1080 with at most 240 frames.
+
+The only third-party runtime package is NumPy (`requirements.txt`, hash-pinned
+to `numpy==2.2.6`); everything else uses the Python 3.11+ standard library.

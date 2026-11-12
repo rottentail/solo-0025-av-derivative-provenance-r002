@@ -1,13 +1,19 @@
-"""PCM WAV inspection, decoding, and deterministic encoding."""
+"""PCM WAV inspection, decoding, and deterministic encoding.
+
+The sample plane is held in NumPy ``int16`` arrays while the RIFF framing stays
+in the standard-library :mod:`wave` module.  Decoding and encoding are
+explicitly little-endian so the produced bytes match the previous
+array-based implementation on every host byte order.
+"""
 
 from __future__ import annotations
 
-import array
 import io
-import sys
 import wave
 from dataclasses import dataclass
 from typing import Iterable
+
+import numpy as np
 
 from ..errors import UnsupportedMedia
 from ..models import MediaDescriptor
@@ -16,11 +22,11 @@ from ..models import MediaDescriptor
 @dataclass(frozen=True)
 class AudioClip:
     sample_rate: int
-    channels: tuple[list[int], ...]
+    channels: tuple[np.ndarray, ...]
 
     @property
     def frame_count(self) -> int:
-        return len(self.channels[0]) if self.channels else 0
+        return int(self.channels[0].shape[0]) if self.channels else 0
 
     @property
     def channel_count(self) -> int:
@@ -99,34 +105,33 @@ def decode_wav(data: bytes) -> AudioClip:
     finally:
         reader.close()
 
-    interleaved = array.array("h")
-    interleaved.frombytes(raw)
-    if sys.byteorder != "little":
-        interleaved.byteswap()
-    if len(interleaved) % channels != 0:
+    interleaved = np.frombuffer(raw, dtype="<i2")
+    if interleaved.shape[0] % channels != 0:
         raise UnsupportedMedia("WAV sample data is not frame-aligned.")
+    frame_count = interleaved.shape[0] // channels
+    planar = interleaved.reshape(frame_count, channels)
+    # Native int16 arrays feed the NumPy kernels; byte order only matters at
+    # encode time where little-endian output is requested explicitly.
     channel_values = tuple(
-        interleaved[index::channels].tolist() for index in range(channels)
+        np.ascontiguousarray(planar[:, index], dtype=np.int16)
+        for index in range(channels)
     )
     return AudioClip(sample_rate=sample_rate, channels=channel_values)
 
 
-def _interleave(channels: tuple[list[int], ...], frame_count: int) -> list[int]:
+def _interleave(channels: tuple[np.ndarray, ...], frame_count: int) -> np.ndarray:
     channel_count = len(channels)
-    result = [0] * (frame_count * channel_count)
-    for channel_index, values in enumerate(channels):
-        result[channel_index::channel_count] = values[:frame_count]
-    return result
+    stacked = np.stack(channels, axis=1)
+    interleaved = stacked.reshape(frame_count * channel_count)
+    return np.ascontiguousarray(interleaved, dtype="<i2")
 
 
 def encode_wav(clip: AudioClip) -> bytes:
     if not clip.channels:
         raise UnsupportedMedia("Cannot encode an audio clip without channels.")
-    if any(len(channel) != clip.frame_count for channel in clip.channels):
+    if any(channel.shape[0] != clip.frame_count for channel in clip.channels):
         raise UnsupportedMedia("Audio channels do not share one frame count.")
-    values = array.array("h", _interleave(clip.channels, clip.frame_count))
-    if sys.byteorder != "little":
-        values.byteswap()
+    values = _interleave(clip.channels, clip.frame_count)
     payload = io.BytesIO()
     with wave.open(payload, "wb") as writer:
         writer.setnchannels(len(clip.channels))
@@ -138,12 +143,12 @@ def encode_wav(clip: AudioClip) -> bytes:
 
 def replace_channels(
     clip: AudioClip,
-    channels: Iterable[list[int]],
+    channels: Iterable[np.ndarray],
 ) -> AudioClip:
-    values = tuple(list(channel) for channel in channels)
+    values = tuple(np.asarray(channel, dtype=np.int16) for channel in channels)
     if not values:
         raise UnsupportedMedia("Audio operations produced no channels.")
-    expected = len(values[0])
-    if any(len(channel) != expected for channel in values):
+    expected = values[0].shape[0]
+    if any(channel.shape[0] != expected for channel in values):
         raise UnsupportedMedia("Audio operation produced misaligned channels.")
     return AudioClip(sample_rate=clip.sample_rate, channels=values)

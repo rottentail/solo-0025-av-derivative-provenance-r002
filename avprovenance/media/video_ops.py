@@ -1,8 +1,17 @@
-"""Planar Y4M operations that preserve deterministic frame layout."""
+"""Planar Y4M operations that preserve deterministic frame layout.
+
+Plane bytes remain the public frame representation used by
+:mod:`avprovenance.media.y4m`; NumPy only replaces the per-element Python
+loops.  Luma arithmetic works on unsigned bytes with an explicit saturated
+add/subtract (``np.clip`` on the ``uint8`` range), so values at the 0/255
+boundaries clamp instead of wrapping into another color.
+"""
 
 from __future__ import annotations
 
 from typing import Any
+
+import numpy as np
 
 from .errors import MediaOperationFailure
 from .y4m import Y4mClip, Y4mFrame, decode_y4m, encode_y4m
@@ -42,11 +51,9 @@ def _crop_plane(
     width: int,
     height: int,
 ) -> bytes:
-    rows = []
-    for row_index in range(y, y + height):
-        start = row_index * plane_width + x
-        rows.append(plane[start : start + width])
-    return b"".join(rows)
+    matrix = np.frombuffer(plane, dtype=np.uint8).reshape(-1, plane_width)
+    cropped = matrix[y : y + height, x : x + width]
+    return np.ascontiguousarray(cropped).tobytes()
 
 
 def crop_video(clip: Y4mClip, operation: dict[str, Any]) -> Y4mClip:
@@ -110,17 +117,20 @@ def crop_video(clip: Y4mClip, operation: dict[str, Any]) -> Y4mClip:
     )
 
 
+def _offset_plane(plane: bytes, amount: int) -> bytes:
+    matrix = np.frombuffer(plane, dtype=np.uint8)
+    # Saturating arithmetic: cast to a wider type, clamp back into [0, 255].
+    adjusted = np.clip(matrix.astype(np.int16) + amount, 0, 255).astype(np.uint8)
+    return adjusted.tobytes()
+
+
 def offset_luma(clip: Y4mClip, operation: dict[str, Any]) -> Y4mClip:
     amount = int(operation["amount"])
     frames = []
     for frame in clip.frames:
-        adjusted = bytes(
-            max(0, min(255, value + amount))
-            for value in frame.y_plane
-        )
         frames.append(
             Y4mFrame(
-                y_plane=adjusted,
+                y_plane=_offset_plane(frame.y_plane, amount),
                 u_plane=frame.u_plane,
                 v_plane=frame.v_plane,
             )
@@ -137,12 +147,9 @@ def offset_luma(clip: Y4mClip, operation: dict[str, Any]) -> Y4mClip:
 
 
 def _mirror_plane(plane: bytes, width: int, height: int) -> bytes:
-    rows = []
-    for row_index in range(height):
-        start = row_index * width
-        row = plane[start : start + width]
-        rows.append(row[::-1])
-    return b"".join(rows)
+    matrix = np.frombuffer(plane, dtype=np.uint8).reshape(height, width)
+    mirrored = np.ascontiguousarray(matrix[:, ::-1])
+    return mirrored.tobytes()
 
 
 def mirror_video(clip: Y4mClip, operation: dict[str, Any]) -> Y4mClip:

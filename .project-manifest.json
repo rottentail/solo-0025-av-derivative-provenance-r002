@@ -5,7 +5,15 @@
   "stack": {
     "language": "python",
     "runtime": "CPython 3.11+",
-    "external_dependencies": []
+    "external_dependencies": [
+      {
+        "name": "numpy",
+        "version": "2.2.6",
+        "requirement": "requirements.txt",
+        "purpose": "Vectorized PCM audio and planar YUV4MPEG2 compute kernels",
+        "hash_pinned": true
+      }
+    ]
   },
   "modules": [
     {

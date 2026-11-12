@@ -1,9 +1,20 @@
-"""PCM audio operations with explicit clipping and length rules."""
+"""PCM audio operations with explicit clipping and length rules.
+
+Sample arithmetic runs on NumPy ``float64`` arrays.  The gain factor still
+comes from :func:`math.pow` so the scalar used in every multiply is bit-for-bit
+the same factor the standard-library implementation used, and the final
+conversion mirrors Python's :func:`round` (half-to-even, matching
+:func:`numpy.rint`) followed by clipping to the signed 16-bit range.  Clipping
+before the integer cast means values at either PCM boundary saturate instead
+of wrapping into a sample with the opposite sign.
+"""
 
 from __future__ import annotations
 
 import math
 from typing import Any
+
+import numpy as np
 
 from .errors import MediaOperationFailure
 from .wav import AudioClip, decode_wav, encode_wav, replace_channels
@@ -13,12 +24,11 @@ PCM_MIN = -32768
 PCM_MAX = 32767
 
 
-def _clip_sample(value: float) -> int:
-    if value >= PCM_MAX:
-        return PCM_MAX
-    if value <= PCM_MIN:
-        return PCM_MIN
-    return int(round(value))
+def _clip_samples(values: np.ndarray) -> np.ndarray:
+    # np.rint rounds half to even, the same rule as Python's built-in round();
+    # clipping before the integer cast preserves the PCM boundaries exactly.
+    rounded = np.rint(values)
+    return np.clip(rounded, PCM_MIN, PCM_MAX).astype(np.int16)
 
 
 def _gain_factor(db: float) -> float:
@@ -47,15 +57,19 @@ def gain_audio(clip: AudioClip, operation: dict[str, Any]) -> AudioClip:
     return replace_channels(
         clip,
         (
-            [_clip_sample(value * factor) for value in values]
+            _clip_samples(values.astype(np.float64) * factor)
             for values in clip.channels
         ),
     )
 
 
 def normalize_audio(clip: AudioClip, operation: dict[str, Any]) -> AudioClip:
+    # The peak is one scalar shared by every channel, so an extreme channel and
+    # a quiet channel keep their original relationship after scaling.  Cast to
+    # float64 first: abs(-32768) cannot be represented in signed int16, and an
+    # integer abs would overflow there while Python's abs(int) does not.
     peak = max(
-        (abs(value) for channel in clip.channels for value in channel),
+        (int(np.max(np.abs(values.astype(np.float64)))) for values in clip.channels),
         default=0,
     )
     if peak == 0:
@@ -66,7 +80,7 @@ def normalize_audio(clip: AudioClip, operation: dict[str, Any]) -> AudioClip:
     return replace_channels(
         clip,
         (
-            [_clip_sample(value * factor) for value in values]
+            _clip_samples(values.astype(np.float64) * factor)
             for values in clip.channels
         ),
     )
@@ -92,17 +106,18 @@ def mix_audio(
     secondary_weight = float(operation["secondary_weight"])
     secondary_factor = _gain_factor(float(operation["secondary_gain"])) * secondary_weight
 
-    mixed: list[list[int]] = []
+    mixed: list[np.ndarray] = []
     for channel_index in range(primary.channel_count):
         left = primary.channels[channel_index]
         right = secondary.channels[channel_index]
-        values: list[int] = []
-        for frame_index in range(frame_count):
-            left_value = left[frame_index] if frame_index < len(left) else 0
-            right_value = right[frame_index] if frame_index < len(right) else 0
-            combined = left_value * primary_weight + right_value * secondary_factor
-            values.append(_clip_sample(combined))
-        mixed.append(values)
+        # Zero-pad the shorter source, matching the per-frame fallback of the
+        # original implementation without introducing a per-element branch.
+        left_padded = np.zeros(frame_count, dtype=np.float64)
+        right_padded = np.zeros(frame_count, dtype=np.float64)
+        left_padded[: left.shape[0]] = left.astype(np.float64)
+        right_padded[: right.shape[0]] = right.astype(np.float64)
+        combined = left_padded * primary_weight + right_padded * secondary_factor
+        mixed.append(_clip_samples(combined))
     return replace_channels(primary, mixed)
 
 

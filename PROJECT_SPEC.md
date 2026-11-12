@@ -26,12 +26,20 @@ result.
 
 - Shape: `backend`
 - Language: Python 3.11+
-- Runtime: Python standard runtime only
+- Runtime: Python standard runtime plus NumPy (hash-pinned in
+  `requirements.txt`) for the PCM and planar-YUV compute kernels
 - Persistence: JSON state plus content-addressed binary files below one data
   directory
 - Public boundary: HTTP/JSON
 - Input media: PCM WAV and planar YUV4MPEG2 in the `C420` family
 - Output media: PCM WAV and planar YUV4MPEG2 in the `C420` family
+
+The media kernels have one implementation: NumPy-backed operations inside the
+existing `media` modules. There is no alternative, selectable processing
+chain. NumPy reproduces the previous standard-library arithmetic exactly
+(half-to-even rounding before signed-16 saturation, and saturated unsigned
+luma arithmetic), so plans recorded before the migration render byte-identical
+WAV samples and Y4M plane bytes.
 
 ## Core entities
 
@@ -260,18 +268,26 @@ leaking local paths.
 
 The project intentionally defers automated tests to the later task stage.
 Until that stage adds a verification suite, the following production workflow
-checks are the baseline:
+checks are the baseline (run inside the virtual environment created from the
+hash-pinned `requirements.txt`):
 
 ```bash
-python3 -m compileall -q avprovenance scripts
-python3 scripts/workflow_checks.py ingest-media-asset
-python3 scripts/workflow_checks.py execute-rendition
-python3 scripts/workflow_checks.py verify-reproduction
+.venv/bin/python -m compileall -q avprovenance scripts tools
+.venv/bin/python scripts/workflow_checks.py ingest-media-asset
+.venv/bin/python scripts/workflow_checks.py execute-rendition
+.venv/bin/python scripts/workflow_checks.py verify-reproduction
 ```
 
 The checks start an ephemeral HTTP server, generate bounded media bytes in
 memory, call the public endpoints, and assert observable state. They do not
 require network access or external media programs.
+
+The NumPy migration additionally carries byte-level parity tooling under
+`tools/`: golden outputs rendered by a frozen copy of the pre-migration
+standard-library kernels, byte/descriptor/error-code parity checks, fixed-seed
+randomized differential runs, direct stereo/luma edge-semantic assertions, and
+a cross-implementation check that re-verifies durable pre-migration renditions
+through the integrity-check use case.
 
 ## Intentionally omitted capabilities
 

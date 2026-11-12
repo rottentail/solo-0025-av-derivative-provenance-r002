@@ -4,20 +4,51 @@
   "source_extensions": [
     ".py"
   ],
-  "build_command": "python3 -m compileall -q avprovenance scripts",
+  "setup": [
+    "python3 -m venv .venv",
+    ".venv/bin/python -m pip install --require-hashes -r requirements.txt"
+  ],
+  "build_command": ".venv/bin/python -m compileall -q avprovenance scripts tools",
   "testing": "deferred",
   "workflow_checks": [
     {
       "workflow_id": "ingest-media-asset",
-      "command": "python3 scripts/workflow_checks.py ingest-media-asset"
+      "command": ".venv/bin/python scripts/workflow_checks.py ingest-media-asset"
     },
     {
       "workflow_id": "execute-rendition",
-      "command": "python3 scripts/workflow_checks.py execute-rendition"
+      "command": ".venv/bin/python scripts/workflow_checks.py execute-rendition"
     },
     {
       "workflow_id": "verify-reproduction",
-      "command": "python3 scripts/workflow_checks.py verify-reproduction"
+      "command": ".venv/bin/python scripts/workflow_checks.py verify-reproduction"
+    }
+  ],
+  "migration_checks": [
+    {
+      "check_id": "golden-generation",
+      "command": "python3 -I tools/generate_golden.py",
+      "requires_numpy": false
+    },
+    {
+      "check_id": "byte-parity",
+      "command": ".venv/bin/python -I tools/check_parity.py",
+      "requires_numpy": true
+    },
+    {
+      "check_id": "differential-fuzz",
+      "command": ".venv/bin/python -I tools/check_fuzz.py 400",
+      "requires_numpy": true
+    },
+    {
+      "check_id": "edge-semantics",
+      "command": ".venv/bin/python -I tools/check_semantics.py",
+      "requires_numpy": true
+    },
+    {
+      "check_id": "cross-implementation-integrity",
+      "command": ".venv/bin/python -I tools/check_cross_implementation.py",
+      "requires_numpy": true
     }
   ]
 }
